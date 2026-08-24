@@ -5,50 +5,86 @@ import {
   productInfoValidator,
   updateProductInfoValidator,
 } from "../middleware/validators";
-import { contextStorage } from "hono/context-storage";
 
 const products = new Hono();
 
-// 1. GET ALL PRODUCTS
 products.get("", async (c) => {
-  const db = getDB(c);
+  const cacheKey = new Request(c.req.url, { method: "GET" });
 
-  const { data, error } = await db
-    .from("products")
-    .select()
-    .order("created_at", { ascending: false });
+  const cache = caches.default;
+  let response = await cache.match(cacheKey);
 
-  if (error) {
-    console.error("Supabase Error:", error);
-    // Sanitize DB error string to avoid leaking schema/PostgREST internals
-    return c.json({ error: "Failed to retrieve products" }, 500);
+  if (!response) {
+    const db = getDB(c);
+
+    // Field projection: Exclude heavy fields like 'description' for list views.
+    // Pagination limit: Cap at 50 to prevent bandwidth exhaustion.
+    const { data, error } = await db
+      .from("products")
+      .select("id, name, type, price, image_url")
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error("Supabase Error:", error);
+      return c.json({ error: "Failed to retrieve products" }, 500);
+    }
+
+    response = new Response(JSON.stringify(data), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "CDN-Cache-Control": "max-age=86400",
+      },
+    });
+
+    c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
   }
 
-  return c.json({ data }, 200);
+  return response;
 });
 
-// 2. GET SINGLE PRODUCT
 products.get("/:id", productIdValidator, async (c) => {
-  const { id } = c.req.valid("param");
-  const db = getDB(c);
+  const cacheKey = new Request(c.req.url, { method: "GET" });
 
-  const { data, error } = await db
-    .from("products")
-    .select()
-    .eq("id", id)
-    .maybeSingle();
+  const cache = caches.default;
 
-  if (error) {
-    console.error("Supabase Error:", error);
-    // Sanitize DB error string
-    return c.json({ error: "Failed to retrieve product details" }, 500);
+  let response = await cache.match(cacheKey);
+
+  if (!response) {
+    const { id } = c.req.valid("param");
+    const db = getDB(c);
+
+    // Select everything since it's the detail view
+    const { data, error } = await db
+      .from("products")
+      .select("description, stock, max_purchasable_limit, size")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Supabase Error:", error);
+      return c.json({ error: "Failed to retrieve product details" }, 500);
+    }
+
+    if (!data) {
+      return c.json({ error: "Product not found" }, 404);
+    }
+
+    response = new Response(JSON.stringify(data), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "CDN-Cache-Control": "max-age=86400",
+      },
+    });
+
+    c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
   }
 
-  if (!data) {
-    return c.json({ error: "Product not found" }, 404);
-  }
-
-  return c.json({ data }, 200);
+  return response;
 });
 
 products.post("", productInfoValidator, async (c) => {
@@ -57,9 +93,24 @@ products.post("", productInfoValidator, async (c) => {
 
   const { error } = await db.from("products").insert(body);
 
-  if (error) return c.json({ error: error.message }, 500);
+  if (error) {
+    console.error("Supabase Error:", error);
+    if (error.code === "23505") {
+      return c.json({ error: "Product names must be unique" }, 409);
+    }
+    // Sanitized: Never leak DB internals on writes
+    return c.json({ error: "Failed to create product" }, 500);
+  }
 
-  return c.json(200);
+  const cache = caches.default;
+
+  c.executionCtx.waitUntil(
+    cache.delete(
+      new Request(`${new URL(c.req.url).origin}/products`, { method: "GET" }),
+    ),
+  );
+
+  return c.body(null, 201);
 });
 
 products.patch(
@@ -68,15 +119,80 @@ products.patch(
   updateProductInfoValidator,
   async (c) => {
     const db = getDB(c);
-    const id = c.req.valid("param");
+    const { id } = c.req.valid("param");
     const body = c.req.valid("json");
-    console.log(body);
+
     const { error } = await db.from("products").update(body).eq("id", id);
 
-    if (error) return c.json({ error: error.message }, 500);
+    if (error) {
+      console.error("Supabase Error:", error);
+      if (error.code === "23505") {
+        return c.json({ error: "Product names must be unique" }, 409);
+      }
+      return c.json({ error: "Failed to update product" }, 500);
+    }
 
-    return c.json(200);
+      const genericFields = ["name", "type", "price", "image_url"];
+      const nonGenericFields = [
+        "description",
+        "stock",
+        "max_purchasable_limit",
+        "size",
+      ];
+
+      const genericFieldsFound = Object.keys(body).some((key) =>
+        genericFields.includes(key),
+      );
+      const nonGenericFieldsFound = Object.keys(body).some((key) =>
+        nonGenericFields.includes(key),
+      );
+
+      const cache = caches.default;
+
+      if (genericFieldsFound) {
+        c.executionCtx.waitUntil(
+          cache.delete(
+            new Request(`${new URL(c.req.url).origin}/products`, {
+              method: "GET",
+            }),
+          ),
+        );
+      }
+
+      if (nonGenericFieldsFound) {
+        c.executionCtx.waitUntil(
+          cache.delete(new Request(c.req.url, { method: "GET" })),
+        );
+      }
+
+    // 204 No Content sends 0 bytes. Lowest possible bandwidth.
+    return c.body(null, 204);
   },
 );
+
+products.delete("/:id", productIdValidator, async (c) => {
+  const db = getDB(c);
+  const { id } = c.req.valid("param");
+
+  const { error } = await db.from("products").delete().eq("id", id);
+
+  if (error) {
+    console.error("Supabase Error:", error);
+    return c.json({ error: "Failed to delete product" }, 500);
+  }
+
+  const cache = caches.default;
+
+  c.executionCtx.waitUntil(
+    Promise.all([
+      cache.delete(new Request(c.req.url, { method: "GET" })), // /products/:id
+      cache.delete(
+        new Request(`${new URL(c.req.url).origin}/products`, { method: "GET" }),
+      ), // /products
+    ]),
+  );
+
+  return c.body(null, 204);
+});
 
 export default products;
