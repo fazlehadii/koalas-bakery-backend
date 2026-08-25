@@ -22,6 +22,30 @@ const productSchema = z.object({
   size: z.array(z.string()).optional(),
 });
 
+const orderSchema = z.object({
+  products: z
+    .array(
+      z.object({
+        productId: z.uuid({ version: "v4" }),
+        size: z.string().optional(),
+        quantity: z.int().positive(),
+      }),
+    )
+    .min(1)
+    .refine(
+      (items) => {
+        const uniqueKeys = items.map((i) => `${i.productId}-${i.size ?? ""}`);
+        return new Set(uniqueKeys).size === items.length;
+      },
+      {
+        message: "Duplicate product and size. Use 'quantity' instead",
+      },
+    ),
+  customer_name: z.string().min(3),
+  phone: z.string().regex(/^\+923\d{9}$/, "Invalid phone number"),
+  address: z.string().min(5, "Enter a valid address"),
+});
+
 const errorHook = (result, c) => {
   if (!result.success) {
     const issue =
@@ -47,6 +71,8 @@ export const productInfoValidator = zValidator(
   productSchema,
   errorHook,
 );
+
+export const orderInfoValidator = zValidator("json", orderSchema, errorHook);
 
 export const updateProductInfoValidator = zValidator(
   "json",
