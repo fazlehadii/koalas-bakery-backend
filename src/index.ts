@@ -1,9 +1,22 @@
 import { Hono } from "hono";
-import products from "./routes/products";
+import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
+import products from "./routes/products";
+import orders from "./routes/orders";
 
 const app = new Hono();
 
+// 1. CORS Middleware (Applied to all /api routes)
+app.use(
+  "/api/*",
+  cors({
+    origin: ["http://localhost:3000"], // Add production frontend URL when deployed
+    allowMethods: ["GET", "POST", "PATCH", "DELETE"],
+    allowHeaders: ["Content-Type", "Authorization"],
+  }),
+);
+
+// 2. Global Error Handler
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
     return c.json({ error: err.message }, err.status);
@@ -12,10 +25,15 @@ app.onError((err, c) => {
   return c.json({ error: "Internal Server Error" }, 500);
 });
 
-app.get("/", (c) => {
-  return c.text("niggeronies");
+// 3. Global 404 Handler (Standardized JSON response)
+app.notFound((c) => {
+  return c.json({ error: "Route Not Found" }, 404);
 });
 
+// 4. Routes
+app.get("/", (c) => c.text("niggeronies"));
+
 app.route("/api/products", products);
+app.route("/api/orders", orders);
 
 export default app;

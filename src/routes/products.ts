@@ -106,7 +106,9 @@ products.post("", productInfoValidator, async (c) => {
 
   c.executionCtx.waitUntil(
     cache.delete(
-      new Request(`${new URL(c.req.url).origin}/products`, { method: "GET" }),
+      new Request(`${new URL(c.req.url).origin}/api/products`, {
+        method: "GET",
+      }),
     ),
   );
 
@@ -132,38 +134,38 @@ products.patch(
       return c.json({ error: "Failed to update product" }, 500);
     }
 
-      const genericFields = ["name", "type", "price", "image_url"];
-      const nonGenericFields = [
-        "description",
-        "stock",
-        "max_purchasable_limit",
-        "size",
-      ];
+    const genericFields = ["name", "type", "price", "image_url"];
+    const nonGenericFields = [
+      "description",
+      "stock",
+      "max_purchasable_limit",
+      "size",
+    ];
 
-      const genericFieldsFound = Object.keys(body).some((key) =>
-        genericFields.includes(key),
+    const genericFieldsFound = Object.keys(body).some((key) =>
+      genericFields.includes(key),
+    );
+    const nonGenericFieldsFound = Object.keys(body).some((key) =>
+      nonGenericFields.includes(key),
+    );
+
+    const cache = caches.default;
+
+    if (genericFieldsFound) {
+      c.executionCtx.waitUntil(
+        cache.delete(
+          new Request(`${new URL(c.req.url).origin}/api/products`, {
+            method: "GET",
+          }),
+        ),
       );
-      const nonGenericFieldsFound = Object.keys(body).some((key) =>
-        nonGenericFields.includes(key),
+    }
+
+    if (nonGenericFieldsFound) {
+      c.executionCtx.waitUntil(
+        cache.delete(new Request(c.req.url, { method: "GET" })),
       );
-
-      const cache = caches.default;
-
-      if (genericFieldsFound) {
-        c.executionCtx.waitUntil(
-          cache.delete(
-            new Request(`${new URL(c.req.url).origin}/products`, {
-              method: "GET",
-            }),
-          ),
-        );
-      }
-
-      if (nonGenericFieldsFound) {
-        c.executionCtx.waitUntil(
-          cache.delete(new Request(c.req.url, { method: "GET" })),
-        );
-      }
+    }
 
     // 204 No Content sends 0 bytes. Lowest possible bandwidth.
     return c.body(null, 204);
@@ -187,7 +189,9 @@ products.delete("/:id", productIdValidator, async (c) => {
     Promise.all([
       cache.delete(new Request(c.req.url, { method: "GET" })), // /products/:id
       cache.delete(
-        new Request(`${new URL(c.req.url).origin}/products`, { method: "GET" }),
+        new Request(`${new URL(c.req.url).origin}/api/products`, {
+          method: "GET",
+        }),
       ), // /products
     ]),
   );

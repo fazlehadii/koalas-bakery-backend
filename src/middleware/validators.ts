@@ -5,6 +5,12 @@ const productIdSchema = z.object({
   id: z.uuid({ version: "v4" }),
 });
 
+const orderNumberSchema = z.object({
+  order_number: z
+    .string()
+    .regex(/^KB-\d{4}-[A-Z0-9]{4}$/, "Wrong order number"),
+});
+
 const productSchema = z.object({
   name: z.string().min(3),
   type: z.string().min(3),
@@ -27,6 +33,12 @@ const errorHook = (result, c) => {
 export const productIdValidator = zValidator(
   "param",
   productIdSchema,
+  errorHook,
+);
+
+export const orderNumberValidator = zValidator(
+  "param",
+  orderNumberSchema,
   errorHook,
 );
 
