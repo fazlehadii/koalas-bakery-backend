@@ -11,92 +11,29 @@ const orders = new Hono();
 orders.get("/all", async (c) => {
   const db = getDB(c);
 
-  const { data: orderData, error: orderError } = await db
+  const { data, error } = await db
     .from("orders")
-    .select("*")
+    .select("*, items:order_items(product_id, quantity, price_at_time, size)")
     .order("created_at", { ascending: false });
 
-  if (orderError) return c.json({ error: "Orders not retrieved" }, 500);
+  if (error) return c.json({ error: "Orders not retrieved" }, 500);
 
-  if (!orderData || orderData.length === 0) {
-    return c.json([], 200);
-  }
-
-  const orderIds = orderData.map((o) => o.id);
-
-  const { data: orderItemsData, error: orderItemsError } = await db
-    .from("order_items")
-    .select("order_id, product_id, quantity, price_at_time, size")
-    .in("order_id", orderIds);
-
-  if (orderItemsError || !orderItemsData) {
-    return c.json({ error: "Orders not retrieved" }, 500);
-  }
-
-  const itemsMap = new Map<string, typeof orderItemsData>();
-
-  for (const item of orderItemsData) {
-    const list = itemsMap.get(item.order_id) ?? [];
-    list.push(item);
-    itemsMap.set(item.order_id, list);
-  }
-
-  const response = orderData.map((order) => ({
-    ...order,
-    items: itemsMap.get(order.id) ?? [],
-  }));
-
-  return c.json(response, 200);
+  return c.json(data ?? [], 200);
 });
 
 orders.get("", customerInfoValidator, async (c) => {
   const db = getDB(c);
+  const { phone, customer_name } = c.req.valid("query");
 
-  const body = c.req.valid("query");
-
-  let { data: orderData, error: orderError } = await db
+  const { data, error } = await db
     .from("orders")
-    .select("*")
-    .eq("phone", body.phone)
-    .eq("customer_name", body.customer_name);
+    .select("*, items:order_items(product_id, quantity, price_at_time, size)")
+    .eq("phone", phone)
+    .eq("customer_name", customer_name);
 
-  if (orderError) return c.json({ error: "Orders not retrieved" }, 500);
+  if (error) return c.json({ error: "Orders not retrieved" }, 500);
 
-  if (!orderData || orderData.length === 0) {
-    return c.json({ error: "No orders exist" }, 404);
-  }
-
-  const orderIds = orderData.map((o) => o.id);
-
-  const { data: orderItemsData, error: orderItemsError } = await db
-    .from("order_items")
-    .select("order_id, product_id, quantity, price_at_time, size")
-    .in("order_id", orderIds);
-
-  if (orderItemsError || !orderItemsData) {
-    return c.json({ error: "Orders not retrieved" }, 500);
-  }
-
-  const itemsMap = new Map<string, typeof orderItemsData>();
-
-  for (const item of orderItemsData) {
-    // 1. Get the bucket for this item's order_id.
-    // If it doesn't exist yet, default to an empty array []
-    const list = itemsMap.get(item.order_id) ?? [];
-
-    // 2. Put the item in the bucket
-    list.push(item);
-
-    // 3. Save the bucket back in the Map
-    itemsMap.set(item.order_id, list);
-  }
-
-  // Attach items in O(1) time per order
-  for (const order of orderData) {
-    order.items = itemsMap.get(order.id) ?? [];
-  }
-
-  return c.json(orderData, 200);
+  return c.json(data ?? [], 200);
 });
 
 orders.post("", orderInfoValidator, async (c) => {
