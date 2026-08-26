@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getDB } from "../../utils/db";
 import {
-  productIdValidator,
+  uuidValidator,
   productInfoValidator,
   updateProductInfoValidator,
 } from "../middleware/validators";
@@ -22,6 +22,7 @@ products.get("", async (c) => {
     const { data, error } = await db
       .from("products")
       .select("id, name, type, price, image_url")
+      .eq("is_active", true)
       .order("created_at", { ascending: false })
       .limit(50);
 
@@ -45,7 +46,7 @@ products.get("", async (c) => {
   return response;
 });
 
-products.get("/:id", productIdValidator, async (c) => {
+products.get("/:id", uuidValidator, async (c) => {
   const cacheKey = new Request(c.req.url, { method: "GET" });
 
   const cache = caches.default;
@@ -61,6 +62,7 @@ products.get("/:id", productIdValidator, async (c) => {
       .from("products")
       .select("description, stock, max_purchasable_limit, size")
       .eq("id", id)
+      .eq("is_active", true)
       .maybeSingle();
 
     if (error) {
@@ -115,68 +117,66 @@ products.post("", productInfoValidator, async (c) => {
   return c.body(null, 201);
 });
 
-products.patch(
-  "/:id",
-  productIdValidator,
-  updateProductInfoValidator,
-  async (c) => {
-    const db = getDB(c);
-    const { id } = c.req.valid("param");
-    const body = c.req.valid("json");
+products.patch("/:id", uuidValidator, updateProductInfoValidator, async (c) => {
+  const db = getDB(c);
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
 
-    const { error } = await db.from("products").update(body).eq("id", id);
+  const { error } = await db.from("products").update(body).eq("id", id);
 
-    if (error) {
-      console.error("Supabase Error:", error);
-      if (error.code === "23505") {
-        return c.json({ error: "Product names must be unique" }, 409);
-      }
-      return c.json({ error: "Failed to update product" }, 500);
+  if (error) {
+    console.error("Supabase Error:", error);
+    if (error.code === "23505") {
+      return c.json({ error: "Product names must be unique" }, 409);
     }
+    return c.json({ error: "Failed to update product" }, 500);
+  }
 
-    const genericFields = ["name", "type", "price", "image_url"];
-    const nonGenericFields = [
-      "description",
-      "stock",
-      "max_purchasable_limit",
-      "size",
-    ];
+  const genericFields = ["name", "type", "price", "image_url"];
+  const nonGenericFields = [
+    "description",
+    "stock",
+    "max_purchasable_limit",
+    "size",
+  ];
 
-    const genericFieldsFound = Object.keys(body).some((key) =>
-      genericFields.includes(key),
+  const genericFieldsFound = Object.keys(body).some((key) =>
+    genericFields.includes(key),
+  );
+  const nonGenericFieldsFound = Object.keys(body).some((key) =>
+    nonGenericFields.includes(key),
+  );
+
+  const cache = caches.default;
+
+  if (genericFieldsFound) {
+    c.executionCtx.waitUntil(
+      cache.delete(
+        new Request(`${new URL(c.req.url).origin}/api/products`, {
+          method: "GET",
+        }),
+      ),
     );
-    const nonGenericFieldsFound = Object.keys(body).some((key) =>
-      nonGenericFields.includes(key),
+  }
+
+  if (nonGenericFieldsFound) {
+    c.executionCtx.waitUntil(
+      cache.delete(new Request(c.req.url, { method: "GET" })),
     );
+  }
 
-    const cache = caches.default;
+  // 204 No Content sends 0 bytes. Lowest possible bandwidth.
+  return c.body(null, 204);
+});
 
-    if (genericFieldsFound) {
-      c.executionCtx.waitUntil(
-        cache.delete(
-          new Request(`${new URL(c.req.url).origin}/api/products`, {
-            method: "GET",
-          }),
-        ),
-      );
-    }
-
-    if (nonGenericFieldsFound) {
-      c.executionCtx.waitUntil(
-        cache.delete(new Request(c.req.url, { method: "GET" })),
-      );
-    }
-
-    // 204 No Content sends 0 bytes. Lowest possible bandwidth.
-    return c.body(null, 204);
-  },
-);
-
-products.delete("/:id", productIdValidator, async (c) => {
+products.delete("/:id", uuidValidator, async (c) => {
   const db = getDB(c);
   const { id } = c.req.valid("param");
 
-  const { error } = await db.from("products").delete().eq("id", id);
+  const { error } = await db
+    .from("products")
+    .update({ is_active: false })
+    .eq("id", id);
 
   if (error) {
     console.error("Supabase Error:", error);

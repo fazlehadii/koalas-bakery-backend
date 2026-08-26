@@ -1,14 +1,8 @@
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 
-const productIdSchema = z.object({
+const uuidSchema = z.object({
   id: z.uuid({ version: "v4" }),
-});
-
-const orderNumberSchema = z.object({
-  order_number: z
-    .string()
-    .regex(/^KB-\d{4}-[A-Z0-9]{4}$/, "Wrong order number"),
 });
 
 const productSchema = z.object({
@@ -20,6 +14,7 @@ const productSchema = z.object({
   stock: z.int().nonnegative(),
   max_purchasable_limit: z.int().positive(),
   size: z.array(z.string()).optional(),
+  is_active: z.boolean(),
 });
 
 const orderSchema = z.object({
@@ -46,6 +41,11 @@ const orderSchema = z.object({
   address: z.string().min(5, "Enter a valid address"),
 });
 
+const orderStatusSchema = z.object({
+  id: z.uuid({ version: "v4" }),
+  status: z.string().max(30),
+});
+
 const customerInfoSchema = z.object({
   customer_name: z.string().min(3),
   phone: z.string().regex(/^\+923\d{9}$/, "Invalid phone number"),
@@ -59,15 +59,11 @@ const errorHook = (result, c) => {
   }
 };
 
-export const productIdValidator = zValidator(
-  "param",
-  productIdSchema,
-  errorHook,
-);
+export const uuidValidator = zValidator("param", uuidSchema, errorHook);
 
-export const orderNumberValidator = zValidator(
+export const orderStatusValidator = zValidator(
   "param",
-  orderNumberSchema,
+  orderStatusSchema,
   errorHook,
 );
 
@@ -78,7 +74,7 @@ export const productInfoValidator = zValidator(
 );
 
 export const customerInfoValidator = zValidator(
-  "json",
+  "query",
   customerInfoSchema,
   errorHook,
 );

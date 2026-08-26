@@ -2,46 +2,101 @@ import { Hono } from "hono";
 import {
   customerInfoValidator,
   orderInfoValidator,
-  orderNumberValidator,
+  orderStatusValidator,
 } from "../middleware/validators";
 import { getDB } from "../../utils/db";
 
 const orders = new Hono();
 
-orders.get("", async (c) => {
+orders.get("/all", async (c) => {
   const db = getDB(c);
 
-  const { data, error } = await db.from("orders").select("*").maybeSingle();
+  const { data: orderData, error: orderError } = await db
+    .from("orders")
+    .select("*")
+    .order("created_at", { ascending: false });
 
-  if (error) return c.json({ error: "Order not retrieved" }, 500);
+  if (orderError) return c.json({ error: "Orders not retrieved" }, 500);
 
-  if (!data) return c.json({ error: "Order not found" }, 404);
+  if (!orderData || orderData.length === 0) {
+    return c.json([], 200);
+  }
 
-  return c.json(data, 200);
+  const orderIds = orderData.map((o) => o.id);
+
+  const { data: orderItemsData, error: orderItemsError } = await db
+    .from("order_items")
+    .select("order_id, product_id, quantity, price_at_time, size")
+    .in("order_id", orderIds);
+
+  if (orderItemsError || !orderItemsData) {
+    return c.json({ error: "Orders not retrieved" }, 500);
+  }
+
+  const itemsMap = new Map<string, typeof orderItemsData>();
+
+  for (const item of orderItemsData) {
+    const list = itemsMap.get(item.order_id) ?? [];
+    list.push(item);
+    itemsMap.set(item.order_id, list);
+  }
+
+  const response = orderData.map((order) => ({
+    ...order,
+    items: itemsMap.get(order.id) ?? [],
+  }));
+
+  return c.json(response, 200);
 });
 
 orders.get("", customerInfoValidator, async (c) => {
   const db = getDB(c);
 
-  const body = c.req.valid("json");
+  const body = c.req.valid("query");
 
-  const { data, error } = await db
+  let { data: orderData, error: orderError } = await db
     .from("orders")
     .select("*")
     .eq("phone", body.phone)
     .eq("customer_name", body.customer_name);
 
+  if (orderError) return c.json({ error: "Orders not retrieved" }, 500);
+
+  if (!orderData || orderData.length === 0) {
+    return c.json({ error: "No orders exist" }, 404);
+  }
+
+  const orderIds = orderData.map((o) => o.id);
+
   const { data: orderItemsData, error: orderItemsError } = await db
     .from("order_items")
-    .select("*")
-    .eq("phone", body.phone)
-    .eq("customer_name", body.customer_name);
+    .select("order_id, product_id, quantity, price_at_time, size")
+    .in("order_id", orderIds);
 
-  if (error) return c.json({ error: "Orders not retrieved" }, 500);
+  if (orderItemsError || !orderItemsData) {
+    return c.json({ error: "Orders not retrieved" }, 500);
+  }
 
-  if (!data) return c.json({ error: "No orders exist" }, 404);
+  const itemsMap = new Map<string, typeof orderItemsData>();
 
-  return c.json(data, 200);
+  for (const item of orderItemsData) {
+    // 1. Get the bucket for this item's order_id.
+    // If it doesn't exist yet, default to an empty array []
+    const list = itemsMap.get(item.order_id) ?? [];
+
+    // 2. Put the item in the bucket
+    list.push(item);
+
+    // 3. Save the bucket back in the Map
+    itemsMap.set(item.order_id, list);
+  }
+
+  // Attach items in O(1) time per order
+  for (const order of orderData) {
+    order.items = itemsMap.get(order.id) ?? [];
+  }
+
+  return c.json(orderData, 200);
 });
 
 orders.post("", orderInfoValidator, async (c) => {
@@ -51,7 +106,12 @@ orders.post("", orderInfoValidator, async (c) => {
   const now = new Date();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
-  const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
+  const randomBytes = new Uint8Array(2);
+  crypto.getRandomValues(randomBytes);
+  const randomCode = Array.from(randomBytes, (b) => b.toString(36))
+    .join("")
+    .toUpperCase()
+    .slice(0, 4);
   const orderNumber = `KB-${mm}${dd}-${randomCode}`;
 
   // Sort IDs natively to utilize C++ fast-path
@@ -93,6 +153,8 @@ orders.post("", orderInfoValidator, async (c) => {
     totalPrice += dbProduct.price * bodyProduct.quantity;
   }
 
+  totalPrice = Math.round(totalPrice * 100) / 100;
+
   // Build payload for RPC (order_id is handled natively by DB)
   const orderItems = body.products.map((item) => ({
     product_id: item.productId,
@@ -123,6 +185,24 @@ orders.post("", orderInfoValidator, async (c) => {
    * insert new row orders row and return the id for it with generated orderNumber, customer_name, phone, address, and total_price from the recent most calculation
    * insert new order_items rows for each product with newly made order_id and already fetched product_id with its price and the quantity from request body
    */
+});
+
+orders.patch("/:id/:status", orderStatusValidator, async (c) => {
+  const db = getDB(c);
+
+  const { id, status } = c.req.valid("param");
+
+  const { data, error } = await db
+    .from("orders")
+    .update({ status })
+    .eq("id", id)
+    .select("id");
+
+  if (error) return c.json({ error: "Status update failed" }, 500);
+  if (!data || data.length === 0)
+    return c.json({ error: "Order not found" }, 404);
+
+  return c.body(null, 200);
 });
 
 export default orders;
