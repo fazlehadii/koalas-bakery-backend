@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import {
+  customerInfoValidator,
   orderInfoValidator,
   orderNumberValidator,
 } from "../middleware/validators";
@@ -7,16 +8,10 @@ import { getDB } from "../../utils/db";
 
 const orders = new Hono();
 
-orders.get("/:order_number", orderNumberValidator, async (c) => {
+orders.get("", async (c) => {
   const db = getDB(c);
 
-  const { order_number } = c.req.valid("param");
-
-  const { data, error } = await db
-    .from("orders")
-    .select("*")
-    .eq("order_number", order_number)
-    .maybeSingle();
+  const { data, error } = await db.from("orders").select("*").maybeSingle();
 
   if (error) return c.json({ error: "Order not retrieved" }, 500);
 
@@ -25,10 +20,22 @@ orders.get("/:order_number", orderNumberValidator, async (c) => {
   return c.json(data, 200);
 });
 
-orders.get("", async (c) => {
+orders.get("", customerInfoValidator, async (c) => {
   const db = getDB(c);
 
-  const { data, error } = await db.from("orders").select("*");
+  const body = c.req.valid("json");
+
+  const { data, error } = await db
+    .from("orders")
+    .select("*")
+    .eq("phone", body.phone)
+    .eq("customer_name", body.customer_name);
+
+  const { data: orderItemsData, error: orderItemsError } = await db
+    .from("order_items")
+    .select("*")
+    .eq("phone", body.phone)
+    .eq("customer_name", body.customer_name);
 
   if (error) return c.json({ error: "Orders not retrieved" }, 500);
 
@@ -39,19 +46,22 @@ orders.get("", async (c) => {
 
 orders.post("", orderInfoValidator, async (c) => {
   const db = getDB(c);
-
   const body = c.req.valid("json");
 
   const now = new Date();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
-  // Generates 4 random uppercase alphanumeric characters
   const randomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
-  const orderNumber = `KB-${mm}${dd}-${randomCode}`; // KB-0825-X7K2
+  const orderNumber = `KB-${mm}${dd}-${randomCode}`;
 
-  // const productIds = body.products.map((product) => product.productId);
+  // Sort IDs natively to utilize C++ fast-path
   const uniqueProductIds = Array.from(
     new Set(body.products.map((p) => p.productId)),
+  ).sort();
+
+  // Sort body in-place to ensure DB locks rows in the same order (Zero deadlocks)
+  body.products.sort((a, b) =>
+    a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0,
   );
 
   const { data: productsData, error: productsError } = await db
@@ -69,54 +79,41 @@ orders.post("", orderInfoValidator, async (c) => {
   let totalPrice = 0;
 
   for (const bodyProduct of body.products) {
-    const dbProduct = dbProductMap.get(bodyProduct.productId);
+    const dbProduct = dbProductMap.get(bodyProduct.productId)!;
 
     if (
-      (dbProduct.size && !dbProduct.size.includes(bodyProduct.size)) ||
+      (dbProduct.size?.length > 0 &&
+        !dbProduct.size.includes(bodyProduct.size)) ||
       bodyProduct.quantity > dbProduct.stock ||
       bodyProduct.quantity > dbProduct.max_purchasable_limit
     ) {
-      return c.json({ error: "Product quantity too much" }, 400);
+      return c.json({ error: "Invalid product quantity/size" }, 400);
     }
 
     totalPrice += dbProduct.price * bodyProduct.quantity;
   }
 
-  const { data: orderData, error: orderError } = await db
-    .from("orders")
-    .insert({
-      order_number: orderNumber,
-      customer_name: body.customer_name,
-      phone: body.phone,
-      address: body.address,
-      total_price: totalPrice,
-    })
-    .select("id")
-    .maybeSingle();
+  // Build payload for RPC (order_id is handled natively by DB)
+  const orderItems = body.products.map((item) => ({
+    product_id: item.productId,
+    size: item.size ?? null,
+    quantity: item.quantity,
+    price_at_time: dbProductMap.get(item.productId)!.price,
+  }));
 
-  if (orderError || !orderData)
-    return c.json({ error: "Order placement failed" }, 500);
-
-  const orderItems = body.products.map((item) => {
-    const dbProduct = dbProductMap.get(item.productId)!;
-    return {
-      order_id: orderData.id,
-      product_id: item.productId,
-      size: item.size ?? null,
-      quantity: item.quantity,
-      price_at_time: dbProduct.price,
-    };
+  // Fire the single atomic transaction
+  const { error: rpcError } = await db.rpc("place_order", {
+    p_order_number: orderNumber,
+    p_customer_name: body.customer_name,
+    p_phone: body.phone,
+    p_address: body.address,
+    p_total_price: totalPrice,
+    p_items: orderItems,
   });
 
-  const { error: orderItemsError } = await db
-    .from("order_items")
-    .insert(orderItems);
+  if (rpcError) return c.json({ error: "Order placement failed" }, 500);
 
-  if (orderItemsError) {
-    await db.from("orders").delete().eq("id", orderData.id);
-    return c.json({ error: "Order placement failed" }, 500);
-  }
-
+  // Minimum bandwidth success response
   return c.body(null, 201);
 
   /*

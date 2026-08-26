@@ -27,7 +27,7 @@ const orderSchema = z.object({
     .array(
       z.object({
         productId: z.uuid({ version: "v4" }),
-        size: z.string().optional(),
+        size: z.string().nullish(),
         quantity: z.int().positive(),
       }),
     )
@@ -44,6 +44,11 @@ const orderSchema = z.object({
   customer_name: z.string().min(3),
   phone: z.string().regex(/^\+923\d{9}$/, "Invalid phone number"),
   address: z.string().min(5, "Enter a valid address"),
+});
+
+const customerInfoSchema = z.object({
+  customer_name: z.string().min(3),
+  phone: z.string().regex(/^\+923\d{9}$/, "Invalid phone number"),
 });
 
 const errorHook = (result, c) => {
@@ -69,6 +74,12 @@ export const orderNumberValidator = zValidator(
 export const productInfoValidator = zValidator(
   "json",
   productSchema,
+  errorHook,
+);
+
+export const customerInfoValidator = zValidator(
+  "json",
+  customerInfoSchema,
   errorHook,
 );
 
