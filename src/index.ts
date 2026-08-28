@@ -10,7 +10,10 @@ const app = new Hono();
 app.use(
   "/api/*",
   cors({
-    origin: ["http://localhost:3000"], // Add production frontend URL when deployed
+    origin: (origin, c) =>
+      [c.env.FRONTEND_URL, "http://localhost:3000"].includes(origin)
+        ? origin
+        : "",
     allowMethods: ["GET", "POST", "PATCH", "DELETE"],
     allowHeaders: ["Content-Type", "Authorization"],
   }),

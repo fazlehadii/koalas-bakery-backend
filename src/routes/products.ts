@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getDB } from "../../utils/db";
+import { adminAuth } from "../middleware/auth";
 import {
   uuidValidator,
   productInfoValidator,
@@ -7,6 +8,13 @@ import {
 } from "../middleware/validators";
 
 const products = new Hono();
+
+products.use("*", async (c, next) => {
+  if (["POST", "PATCH", "DELETE"].includes(c.req.method)) {
+    return adminAuth(c, next);
+  }
+  await next();
+});
 
 products.get("", async (c) => {
   const cacheKey = new Request(c.req.url, { method: "GET" });

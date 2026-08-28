@@ -3,10 +3,19 @@ import {
   customerInfoValidator,
   orderInfoValidator,
   orderStatusValidator,
+  uuidValidator,
 } from "../middleware/validators";
 import { getDB } from "../../utils/db";
+import { adminAuth } from "../middleware/auth";
 
 const orders = new Hono();
+
+orders.use("/all", adminAuth);
+orders.use("/:id/:status", adminAuth);
+orders.use("/:id", async (c, next) => {
+  if (c.req.method === "DELETE") return adminAuth(c, next);
+  await next();
+});
 
 orders.get("/all", async (c) => {
   const db = getDB(c);
@@ -14,6 +23,22 @@ orders.get("/all", async (c) => {
   const { data, error } = await db
     .from("orders")
     .select("*, items:order_items(product_id, quantity, price_at_time, size)")
+    .select(
+      `
+      *,
+      items:order_items(
+        quantity,
+        price_at_time,
+        size,
+        product:products(
+          id,
+          name,
+          type,
+          image_url
+        )
+      )
+    `,
+    )
     .order("created_at", { ascending: false });
 
   if (error) return c.json({ error: "Orders not retrieved" }, 500);
@@ -29,9 +54,30 @@ orders.get("", customerInfoValidator, async (c) => {
     .from("orders")
     .select("*, items:order_items(product_id, quantity, price_at_time, size)")
     .eq("phone", phone)
+    .eq("customer_name", customer_name)
+    .select(
+      `
+      *,
+      items:order_items(
+        quantity,
+        price_at_time,
+        size,
+        product:products(
+          id,
+          name,
+          type,
+          image_url
+        )
+      )
+    `,
+    )
+    .eq("phone", phone)
     .eq("customer_name", customer_name);
 
   if (error) return c.json({ error: "Orders not retrieved" }, 500);
+  if (!data || data.length === 0) {
+    return c.json({ error: "No orders exist" }, 404);
+  }
 
   return c.json(data ?? [], 200);
 });
@@ -141,5 +187,36 @@ orders.patch("/:id/:status", orderStatusValidator, async (c) => {
 
   return c.body(null, 200);
 });
+
+orders.delete("/:id", uuidValidator, async (c) => {
+  const db = getDB(c);
+
+  const { id } = c.req.valid("param");
+
+  const { count, error } = await db
+    .from("orders")
+    .update({ status: "cancelled" }, { count: "exact" })
+    .eq("id", id)
+    .eq("status", "placed");
+
+  if (error) return c.json({ error: "Cancellation failed" }, 500);
+
+  if (count === 0) {
+    return c.json({ error: "Order cannot be cancelled or was not found" }, 400);
+  }
+
+  return c.body(null, 204);
+});
+
+/**
+ * placed
+ * preparing
+ * out for delivery
+ * delivered
+ * cancelled
+ * returned/refunded
+ *
+ * custom status
+ */
 
 export default orders;
