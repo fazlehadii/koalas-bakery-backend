@@ -1,14 +1,44 @@
 import { Hono } from "hono";
+import { Resend } from "resend";
 import {
   customerInfoValidator,
   orderInfoValidator,
+  orderLookupValidator,
   orderStatusValidator,
   uuidValidator,
 } from "../middleware/validators";
 import { getDB } from "../../utils/db";
 import { adminAuth } from "../middleware/auth";
+import { notifyProductRevalidation } from "../lib/revalidate";
 
 const orders = new Hono();
+
+async function sendOrderConfirmationEmail(env, orderNumber, customerName, email) {
+  const apiKey = env?.RESEND_API_KEY;
+  const from = env?.EMAIL_FROM || "onboarding@resend.dev";
+
+  if (!apiKey || !email) {
+    return;
+  }
+
+  try {
+    const resend = new Resend(apiKey);
+    await resend.emails.send({
+      from,
+      to: [email],
+      subject: `Your Koalas Bakery order ${orderNumber} is confirmed`,
+      html: `
+        <p>Hi ${customerName},</p>
+        <p>Your order <strong>${orderNumber}</strong> has been placed successfully.</p>
+        <p>We will keep you updated as it moves through preparation and delivery.</p>
+        <p>Thanks for shopping with Koalas Bakery.</p>
+      `,
+      text: `Hi ${customerName}, your order ${orderNumber} has been placed successfully. Thanks for shopping with Koalas Bakery.`,
+    });
+  } catch (error) {
+    console.error("Resend email failed:", error);
+  }
+}
 
 orders.use("/all", adminAuth);
 orders.use("/:id/:status", adminAuth);
@@ -22,7 +52,6 @@ orders.get("/all", async (c) => {
 
   const { data, error } = await db
     .from("orders")
-    .select("*, items:order_items(product_id, quantity, price_at_time, size)")
     .select(
       `
       *,
@@ -46,15 +75,12 @@ orders.get("/all", async (c) => {
   return c.json(data ?? [], 200);
 });
 
-orders.get("", customerInfoValidator, async (c) => {
+orders.post("/lookup", orderLookupValidator, async (c) => {
   const db = getDB(c);
-  const { phone, customer_name } = c.req.valid("query");
+  const { email, phone, order_id } = c.req.valid("json");
 
   const { data, error } = await db
     .from("orders")
-    .select("*, items:order_items(product_id, quantity, price_at_time, size)")
-    .eq("phone", phone)
-    .eq("customer_name", customer_name)
     .select(
       `
       *,
@@ -71,15 +97,17 @@ orders.get("", customerInfoValidator, async (c) => {
       )
     `,
     )
-    .eq("phone", phone)
-    .eq("customer_name", customer_name);
+    .eq("phone", phone.trim())
+    .eq("email", email.trim().toLowerCase())
+    .eq("order_number", order_id.trim())
+    .maybeSingle();
 
-  if (error) return c.json({ error: "Orders not retrieved" }, 500);
-  if (!data || data.length === 0) {
-    return c.json({ error: "No orders exist" }, 404);
+  if (error) return c.json({ error: "Order not retrieved" }, 500);
+  if (!data) {
+    return c.json({ error: "Order not found" }, 404);
   }
 
-  return c.json(data ?? [], 200);
+  return c.json(data, 200);
 });
 
 orders.post("", orderInfoValidator, async (c) => {
@@ -151,6 +179,7 @@ orders.post("", orderInfoValidator, async (c) => {
     p_order_number: orderNumber,
     p_customer_name: body.customer_name,
     p_phone: body.phone,
+    p_email: body.email,
     p_address: body.address,
     p_total_price: totalPrice,
     p_items: orderItems,
@@ -158,8 +187,21 @@ orders.post("", orderInfoValidator, async (c) => {
 
   if (rpcError) return c.json({ error: "Order placement failed" }, 500);
 
-  // Minimum bandwidth success response
-  return c.body(null, 201);
+  c.executionCtx.waitUntil(
+    sendOrderConfirmationEmail(
+      c.env,
+      orderNumber,
+      body.customer_name,
+      body.email,
+    ),
+  );
+
+  notifyProductRevalidation(
+    c.env,
+    c.executionCtx.waitUntil.bind(c.executionCtx),
+  );
+
+  return c.json({ order_number: orderNumber }, 201);
 
   /*
    * get all products mentioned in body

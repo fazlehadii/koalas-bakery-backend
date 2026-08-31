@@ -38,7 +38,14 @@ const orderSchema = z.object({
     ),
   customer_name: z.string().min(3),
   phone: z.string().regex(/^\+923\d{9}$/, "Invalid phone number"),
+  email: z.email("Enter a valid email address"),
   address: z.string().min(5, "Enter a valid address"),
+});
+
+const orderLookupSchema = z.object({
+  email: z.email("Enter a valid email address"),
+  phone: z.string().regex(/^\+923\d{9}$/, "Invalid phone number"),
+  order_id: z.string().min(3, "Order ID is required"),
 });
 
 const orderStatusSchema = z.object({
@@ -76,6 +83,12 @@ export const productInfoValidator = zValidator(
 export const customerInfoValidator = zValidator(
   "query",
   customerInfoSchema,
+  errorHook,
+);
+
+export const orderLookupValidator = zValidator(
+  "json",
+  orderLookupSchema,
   errorHook,
 );
 

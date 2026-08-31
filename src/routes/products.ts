@@ -6,6 +6,7 @@ import {
   productInfoValidator,
   updateProductInfoValidator,
 } from "../middleware/validators";
+import { notifyProductRevalidation } from "../lib/revalidate";
 
 const products = new Hono();
 
@@ -29,7 +30,7 @@ products.get("", async (c) => {
     // Pagination limit: Cap at 50 to prevent bandwidth exhaustion.
     const { data, error } = await db
       .from("products")
-      .select("id, name, type, price, image_url")
+      .select("id, name, type, price, image_url, stock, max_purchasable_limit")
       .eq("is_active", true)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -101,7 +102,7 @@ products.post("", productInfoValidator, async (c) => {
   const db = getDB(c);
   const body = c.req.valid("json");
 
-  const { error } = await db.from("products").insert(body);
+  const { data, error } = await db.from("products").insert(body).select().single();
 
   if (error) {
     console.error("Supabase Error:", error);
@@ -121,8 +122,9 @@ products.post("", productInfoValidator, async (c) => {
       }),
     ),
   );
+  notifyProductRevalidation(c.env, c.executionCtx.waitUntil.bind(c.executionCtx));
 
-  return c.body(null, 201);
+  return c.json(data, 201);
 });
 
 products.patch("/:id", uuidValidator, updateProductInfoValidator, async (c) => {
@@ -173,6 +175,8 @@ products.patch("/:id", uuidValidator, updateProductInfoValidator, async (c) => {
     );
   }
 
+  notifyProductRevalidation(c.env, c.executionCtx.waitUntil.bind(c.executionCtx));
+
   // 204 No Content sends 0 bytes. Lowest possible bandwidth.
   return c.body(null, 204);
 });
@@ -203,6 +207,7 @@ products.delete("/:id", uuidValidator, async (c) => {
       ), // /products
     ]),
   );
+  notifyProductRevalidation(c.env, c.executionCtx.waitUntil.bind(c.executionCtx));
 
   return c.body(null, 204);
 });
